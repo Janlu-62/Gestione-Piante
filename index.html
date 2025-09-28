@@ -10,6 +10,48 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    
+    <!-- FIREBASE SDK v9 -->
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+        import { 
+            getFirestore, 
+            collection, 
+            doc, 
+            setDoc, 
+            getDocs, 
+            deleteDoc, 
+            onSnapshot,
+            updateDoc 
+        } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
+
+        // ⚠️ CONFIGURAZIONE FIREBASE 
+        const firebaseConfig = {
+    apiKey: "AIzaSyD_3SkaVkihZCHyt6HDKDAkBcmprclr1z8",
+    authDomain: "gestione-piante.firebaseapp.com",
+    projectId: "gestione-piante",
+    storageBucket: "gestione-piante.firebasestorage.app",
+    messagingSenderId: "146683423213",
+    appId: "1:146683423213:web:945c31b12d105c72451fe4"
+};
+
+        // Inizializza Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
+        // Rendi disponibile globalmente
+        window.firebaseDb = db;
+        window.firebaseOperations = {
+            collection,
+            doc,
+            setDoc,
+            getDocs,
+            deleteDoc,
+            onSnapshot,
+            updateDoc
+        };
+    </script>
+
     <style>
         /* Stile personalizzato usando il font Inter */
         body {
@@ -28,16 +70,32 @@
             top: 0;
             width: auto;
         }
+        /* Indicatore di sincronizzazione */
+        .sync-indicator {
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: .5; }
+        }
     </style>
 </head>
 <body class="bg-gray-100 min-h-screen flex items-start justify-center p-4 sm:p-6">
 
     <div class="w-full max-w-2xl mx-auto">
         
-        <!-- Titolo Principale -->
+        <!-- Titolo Principale con Indicatore di Sync -->
         <header class="text-center mb-8">
             <h1 class="text-4xl font-bold text-green-700">Gestione Piante</h1>
             <p class="text-gray-500 mt-2">Tieni traccia di annaffiature e concimazioni.</p>
+            <div id="sync-status" class="mt-3 text-sm">
+                <span id="sync-indicator" class="inline-flex items-center text-green-600">
+                    <svg class="sync-indicator w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path>
+                    </svg>
+                    <span id="sync-text">Sincronizzato con il cloud</span>
+                </span>
+            </div>
         </header>
 
         <div class="space-y-8">
@@ -128,7 +186,19 @@
 
 
     <script>
-        document.addEventListener('DOMContentLoaded', () => {
+        // Attendi che Firebase sia caricato
+        setTimeout(() => {
+            if (!window.firebaseDb || !window.firebaseOperations) {
+                console.error('Firebase non configurato correttamente!');
+                document.getElementById('sync-text').textContent = 'Errore: Configura Firebase!';
+                document.getElementById('sync-indicator').classList.remove('text-green-600');
+                document.getElementById('sync-indicator').classList.add('text-red-600');
+                return;
+            }
+
+            const db = window.firebaseDb;
+            const { collection, doc, setDoc, getDocs, deleteDoc, onSnapshot, updateDoc } = window.firebaseOperations;
+
             // Elementi del DOM
             const newPlantNameInput = document.getElementById('new-plant-name');
             const addPlantBtn = document.getElementById('add-plant-btn');
@@ -137,6 +207,8 @@
             const actionDateInput = document.getElementById('action-date');
             const plantListContainer = document.getElementById('plant-list');
             const notification = document.getElementById('notification');
+            const syncText = document.getElementById('sync-text');
+            const syncIndicator = document.getElementById('sync-indicator');
 
             // Elementi della modale Info
             const infoModal = document.getElementById('info-modal');
@@ -155,20 +227,61 @@
             // Stato dell'applicazione
             let plants = [];
             let currentPlantId = null; 
-            let deleteCallback = null; // Funzione da chiamare dopo la conferma
+            let deleteCallback = null;
 
-            // --- Funzioni Principali ---
-
-            function savePlants() {
-                localStorage.setItem('myPlants', JSON.stringify(plants));
-            }
-
-            function loadPlants() {
-                const savedPlants = localStorage.getItem('myPlants');
-                if (savedPlants) {
-                    plants = JSON.parse(savedPlants);
+            // --- Funzioni Firebase ---
+            
+            function updateSyncStatus(status) {
+                if (status === 'syncing') {
+                    syncText.textContent = 'Sincronizzazione...';
+                    syncIndicator.classList.remove('text-green-600', 'text-red-600');
+                    syncIndicator.classList.add('text-yellow-600');
+                } else if (status === 'synced') {
+                    syncText.textContent = 'Sincronizzato con il cloud';
+                    syncIndicator.classList.remove('text-yellow-600', 'text-red-600');
+                    syncIndicator.classList.add('text-green-600');
+                } else if (status === 'error') {
+                    syncText.textContent = 'Errore di sincronizzazione';
+                    syncIndicator.classList.remove('text-green-600', 'text-yellow-600');
+                    syncIndicator.classList.add('text-red-600');
                 }
             }
+
+            async function savePlantToFirebase(plant) {
+                updateSyncStatus('syncing');
+                try {
+                    await setDoc(doc(db, 'plants', plant.id.toString()), plant);
+                    updateSyncStatus('synced');
+                } catch (error) {
+                    console.error('Errore nel salvataggio:', error);
+                    updateSyncStatus('error');
+                    showNotification('Errore nel salvataggio nel cloud', true);
+                }
+            }
+
+            async function deletePlantFromFirebase(plantId) {
+                updateSyncStatus('syncing');
+                try {
+                    await deleteDoc(doc(db, 'plants', plantId.toString()));
+                    updateSyncStatus('synced');
+                } catch (error) {
+                    console.error('Errore nell\'eliminazione:', error);
+                    updateSyncStatus('error');
+                }
+            }
+
+            async function updatePlantInFirebase(plant) {
+                updateSyncStatus('syncing');
+                try {
+                    await updateDoc(doc(db, 'plants', plant.id.toString()), plant);
+                    updateSyncStatus('synced');
+                } catch (error) {
+                    console.error('Errore nell\'aggiornamento:', error);
+                    updateSyncStatus('error');
+                }
+            }
+
+            // --- Funzioni Principali ---
 
             function showNotification(message, isError = false) {
                 notification.textContent = message;
@@ -266,10 +379,9 @@
                 deleteCallback = null;
             }
 
-
             // --- Gestori di Eventi ---
 
-            addPlantBtn.addEventListener('click', () => {
+            addPlantBtn.addEventListener('click', async () => {
                 const name = newPlantNameInput.value.trim();
                 if (name) {
                     const newPlant = {
@@ -277,10 +389,11 @@
                         name: name,
                         lastWatered: null,
                         lastFertilized: null,
-                        notes: ''
+                        notes: '',
+                        createdAt: new Date().toISOString()
                     };
                     plants.push(newPlant);
-                    savePlants();
+                    await savePlantToFirebase(newPlant);
                     render();
                     newPlantNameInput.value = '';
                     showNotification(`Pianta "${name}" aggiunta!`);
@@ -289,7 +402,7 @@
                 }
             });
 
-            actionForm.addEventListener('submit', (e) => {
+            actionForm.addEventListener('submit', async (e) => {
                 e.preventDefault();
                 
                 if (plants.length === 0) {
@@ -313,7 +426,7 @@
                     } else if (actionType === 'fertilize') {
                         plant.lastFertilized = actionDate;
                     }
-                    savePlants();
+                    await updatePlantInFirebase(plant);
                     render();
                     const actionText = actionType === 'water' ? 'Annaffiatura' : 'Concimazione';
                     showNotification(`${actionText} di "${plant.name}" salvata!`);
@@ -327,9 +440,9 @@
                 if (deleteBtn) {
                     const plantId = deleteBtn.getAttribute('data-id');
                     const plantToDelete = plants.find(p => p.id == plantId);
-                    showConfirmModal(`Sei sicuro di voler eliminare la pianta "${plantToDelete.name}"?`, () => {
+                    showConfirmModal(`Sei sicuro di voler eliminare la pianta "${plantToDelete.name}"?`, async () => {
+                        await deletePlantFromFirebase(plantId);
                         plants = plants.filter(p => p.id != plantId);
-                        savePlants();
                         render();
                         showNotification(`Pianta "${plantToDelete.name}" eliminata.`);
                     });
@@ -340,17 +453,18 @@
             });
 
             // Gestori Modale Info
-            saveNotesBtn.addEventListener('click', () => {
+            saveNotesBtn.addEventListener('click', async () => {
                 if (currentPlantId) {
                     const plant = plants.find(p => p.id == currentPlantId);
                     if (plant) {
                         plant.notes = plantNotes.value.trim();
-                        savePlants();
+                        await updatePlantInFirebase(plant);
                         closeInfoModal();
                         showNotification(`Note per "${plant.name}" salvate.`);
                     }
                 }
             });
+
             closeModalBtn.addEventListener('click', closeInfoModal);
             cancelModalBtn.addEventListener('click', closeInfoModal);
             infoModal.addEventListener('click', (e) => {
@@ -368,14 +482,45 @@
             });
             confirmCancelBtn.addEventListener('click', closeConfirmModal);
 
+            // --- Real-time sync con Firebase ---
+            const unsubscribe = onSnapshot(collection(db, 'plants'), (snapshot) => {
+                plants = [];
+                snapshot.forEach((doc) => {
+                    plants.push(doc.data());
+                });
+                // Ordina per data di creazione
+                plants.sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+                render();
+                updateSyncStatus('synced');
+            }, (error) => {
+                console.error('Errore nella sincronizzazione:', error);
+                updateSyncStatus('error');
+            });
+
             // --- Inizializzazione ---
             actionDateInput.valueAsDate = new Date();
-            loadPlants();
-            render();
-        });
+            
+            // Carica i dati iniziali da Firebase
+            async function loadInitialData() {
+                updateSyncStatus('syncing');
+                try {
+                    const querySnapshot = await getDocs(collection(db, 'plants'));
+                    plants = [];
+                    querySnapshot.forEach((doc) => {
+                        plants.push(doc.data());
+                    });
+                    plants.sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+                    render();
+                    updateSyncStatus('synced');
+                } catch (error) {
+                    console.error('Errore nel caricamento iniziale:', error);
+                    updateSyncStatus('error');
+                }
+            }
+
+            loadInitialData();
+
+        }, 1000); // Attendi 1 secondo per essere sicuri che Firebase sia caricato
     </script>
 </body>
 </html>
-
-
-
